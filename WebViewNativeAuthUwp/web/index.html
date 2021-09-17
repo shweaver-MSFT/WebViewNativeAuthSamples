@@ -1,0 +1,27 @@
+﻿<!DOCTYPE html>
+
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <meta charset="utf-8" />
+    <title>SimpleWebApp</title>
+</head>
+<body>
+    <button onclick="onButtonClick()">Get me</button>
+    <label>Signed in as:</label>
+    <label id="mylabel">...</label>
+
+    <script type='text/javascript'>
+
+        let label = document.getElementById("mylabel");
+
+        async function onButtonClick() {
+            // Fetch the curent user, "me"
+            let data = await fetch("https://graph.microsoft.com/v1.0/me")
+            let user = await data.json();
+
+            // Access user data
+            label.innerText = user.userPrincipalName;
+        }
+    </script>
+</body>
+</html>
