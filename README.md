@@ -42,6 +42,62 @@ The second sample is another UWP project that leverages the `Microsoft.UI.Xaml.C
 
 This sample demonstrates a broken scenario, where it is not possible to support the async flow of UI interaction. Using the deferral with async methods causes the app to freeze, and attempting to force the code to run synchornously causes the WebView to ignore the response and execute the request on its own (without the auth header).
 
+```
+// Runs when the hosted web page makes a request. 
+private async void OnWebView2WebResourceRequested(CoreWebView2 sender, CoreWebView2WebResourceRequestedEventArgs args)
+{
+    // Without the deferral, the request is sent properly but our response is ignored.
+    // - The WebView won't wait for our async calls and sends the request on it's own, without the special auth header.
+    // With the deferral, the request is sent properly but the app freezes because we deviate from the original calling thread.
+    const bool useDeferral = false;
+
+    // Detect requests to Microsoft Graph
+    if (args.Request.Uri.StartsWith(GRAPH_ENDPOINT))
+    {
+        var deferral = useDeferral ? args.GetDeferral() : null;
+        var tcs = new TaskCompletionSource<CoreWebView2WebResourceResponse>();
+
+        // Do this on this work on the UI thread to ensure any UI prompts from the auth provider are able to display.
+        var taskQueued = DispatcherQueue.GetForCurrentThread().TryEnqueue(async () =>
+        {
+            try
+            {
+                // There is no provided client for sending the specific CoreWebView2 request type.
+                // Convert the request from CoreWebView2 into something we can work with.
+                var request = GetHttpRequestMessage(args.Request);
+
+                // Get the auth token and append it to the request.
+                var token = await ProviderManager.Instance.GlobalProvider.GetTokenAsync();
+                request.Headers.Authorization = new HttpCredentialsHeaderValue("Bearer", token);
+
+                // Send the request and get the response.
+                var client = new HttpClient();
+                var response = await client.SendRequestAsync(request);
+
+                // Convert the response to the appropriate type expected by CoreWebView2 and return.
+                tcs.SetResult(await GetWebResourceResponseAsync(sender, response));
+            }
+            catch (Exception e)
+            {
+                System.Diagnostics.Debug.WriteLine(e.Message);
+                tcs.SetException(e);
+            }
+        });
+
+        if (taskQueued)
+        {
+            args.Response = await tcs.Task;
+        }
+        else
+        {
+            tcs.SetCanceled();
+        }
+
+        deferral?.Complete();
+    }
+}
+```
+
 ### Sample setup
 
 > Remember: Setup must be done for both sample projects.
