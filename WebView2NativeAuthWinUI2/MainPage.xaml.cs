@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Threading.Tasks;
@@ -53,54 +54,51 @@ namespace WebView2NativeAuthWinUI2
         /// </summary>
         private async void OnWebView2WebResourceRequested(CoreWebView2 sender, CoreWebView2WebResourceRequestedEventArgs args)
         {
-            // Without the deferral, the request is sent properly but our response is ignored.
-            // - The WebView won't wait for our async calls and sends the request on it's own, without the special auth header.
-            // With the deferral, the request is sent properly but the app freezes because we deviate from the original calling thread.
-            const bool useDeferral = false;
-
             // Detect requests to Microsoft Graph
             if (args.Request.Uri.StartsWith(GRAPH_ENDPOINT))
             {
-                var deferral = useDeferral ? args.GetDeferral() : null;
-                var tcs = new TaskCompletionSource<CoreWebView2WebResourceResponse>();
-
-                // Do this on this work on the UI thread to ensure any UI prompts from the auth provider are able to display.
-                var taskQueued = DispatcherQueue.GetForCurrentThread().TryEnqueue(async () =>
+                //var deferral = useDeferral ? args.GetDeferral() : null;
+                using (args.GetDeferral())
                 {
-                    try
+                    var tcs = new TaskCompletionSource<CoreWebView2WebResourceResponse>();
+
+                    // Do this on this work on the UI thread to ensure any UI prompts from the auth provider are able to display.
+                    var taskQueued = DispatcherQueue.GetForCurrentThread().TryEnqueue(async () =>
                     {
-                        // There is no provided client for sending the specific CoreWebView2 request type.
-                        // Convert the request from CoreWebView2 into something we can work with.
-                        var request = GetHttpRequestMessage(args.Request);
+                        try
+                        {
+                            // There is no provided client for sending the specific CoreWebView2 request type.
+                            // Convert the request from CoreWebView2 into something we can work with.
+                            var request = GetHttpRequestMessage(args.Request);
 
-                        // Get the auth token and append it to the request.
-                        var token = await ProviderManager.Instance.GlobalProvider.GetTokenAsync();
-                        request.Headers.Authorization = new HttpCredentialsHeaderValue("Bearer", token);
+                            // Get the auth token and append it to the request.
+                            var token = await ProviderManager.Instance.GlobalProvider.GetTokenAsync();
+                            request.Headers.Authorization = new HttpCredentialsHeaderValue("Bearer", token);
 
-                        // Send the request and get the response.
-                        var client = new HttpClient();
-                        var response = await client.SendRequestAsync(request);
+                            // Send the request and get the response.
+                            var client = new HttpClient();
+                            var response = await client.SendRequestAsync(request);
 
-                        // Convert the response to the appropriate type expected by CoreWebView2 and return.
-                        tcs.SetResult(await GetWebResourceResponseAsync(sender, response));
-                    }
-                    catch (Exception e)
+                            // Convert the response to the appropriate type expected by CoreWebView2 and return.
+                            tcs.SetResult(await GetWebResourceResponseAsync(sender, response));
+                        }
+                        catch (Exception e)
+                        {
+                            Debug.WriteLine(e.Message);
+                            Debugger.Break();
+                            tcs.SetException(e);
+                        }
+                    });
+
+                    if (taskQueued)
                     {
-                        System.Diagnostics.Debug.WriteLine(e.Message);
-                        tcs.SetException(e);
+                        args.Response = await tcs.Task;
                     }
-                });
-
-                if (taskQueued)
-                {
-                    args.Response = await tcs.Task;
+                    else
+                    {
+                        tcs.SetCanceled();
+                    }
                 }
-                else
-                {
-                    tcs.SetCanceled();
-                }
-
-                deferral?.Complete();
             }
         }
 
@@ -109,26 +107,34 @@ namespace WebView2NativeAuthWinUI2
         /// </summary>
         private static HttpRequestMessage GetHttpRequestMessage(CoreWebView2WebResourceRequest webResourceRequest)
         {
-            // Construct the request message to send.
-            var request = new HttpRequestMessage()
+            try
             {
-                Method = new HttpMethod(webResourceRequest.Method),
-                RequestUri = new Uri(webResourceRequest.Uri)
-            };
+                // Construct the request message to send.
+                var request = new HttpRequestMessage()
+                {
+                    Method = new HttpMethod(webResourceRequest.Method),
+                    RequestUri = new Uri(webResourceRequest.Uri)
+                };
 
-            // Apply any headers to the request message.
-            foreach (var header in webResourceRequest.Headers)
-            {
-                request.Headers.Add(header.Key, header.Value);
+                // Apply any headers to the request message.
+                foreach (var header in webResourceRequest.Headers)
+                {
+                    request.Headers.Add(header.Key, header.Value);
+                }
+
+                // Apply any content to the request message.
+                if (webResourceRequest.Content != null)
+                {
+                    request.Content = new HttpStreamContent(webResourceRequest.Content.AsStreamForRead().AsInputStream());
+                }
+
+                return request;
             }
-
-            // Apply any content to the request message.
-            if (webResourceRequest.Content != null)
+            catch (Exception e)
             {
-                request.Content = new HttpStreamContent(webResourceRequest.Content.AsStreamForRead().AsInputStream());
+                Debugger.Break();
+                throw e;
             }
-
-            return request;
         }
 
         /// <summary>
@@ -136,19 +142,36 @@ namespace WebView2NativeAuthWinUI2
         /// </summary>
         private static async Task<CoreWebView2WebResourceResponse> GetWebResourceResponseAsync(CoreWebView2 coreWebView2, HttpResponseMessage response)
         {
-            // Get the response content buffer
-            var responseContentBuffer = await response.Content.ReadAsBufferAsync();
+            try
+            {
+                // Get the response content buffer
+                var responseContentBuffer = await response.Content.ReadAsBufferAsync();
 
-            // Convert the content buffer to a stream.
-            var contentStream = responseContentBuffer.AsStream();
+                // Convert the content buffer to a stream.
+                var contentStream = responseContentBuffer.AsStream();
 
-            // Sanity check, inspect the response content.
-            var reader = new StreamReader(contentStream);
-            var contentString = await reader.ReadToEndAsync();
-            System.Diagnostics.Debug.WriteLine(contentString);
+                // Sanity check, inspect the response content.
+                if (Debugger.IsAttached)
+                {
+                    var reader = new StreamReader(contentStream);
+                    var contentString = await reader.ReadToEndAsync();
+                    Debug.WriteLine(contentString);
+                }
 
-            // Return the appropriate response type.
-            return coreWebView2.Environment.CreateWebResourceResponse(contentStream.AsRandomAccessStream(), (int)response.StatusCode, response.ReasonPhrase, response.Headers.ToString());
+                // Convert the System.Stream to a Windows.Storage.Streams.IRandomAccessStream
+                var randomAccessStream = contentStream.AsRandomAccessStream();
+                
+                // Seek to 0, as recommended here: https://github.com/MicrosoftEdge/WebView2Feedback/issues/1627
+                randomAccessStream.Seek(0);
+
+                // Return the appropriate CoreWebView2WebResourceResponse response type.
+                return coreWebView2.Environment.CreateWebResourceResponse(randomAccessStream, (int)response.StatusCode, response.ReasonPhrase, response.Headers.ToString());
+            }
+            catch (Exception e)
+            {
+                Debugger.Break();
+                throw e;
+            }
         }
     }
 }
