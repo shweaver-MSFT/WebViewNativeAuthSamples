@@ -76,11 +76,17 @@ namespace WebView2NativeAuthWinUI2
                             request.Headers.Authorization = new HttpCredentialsHeaderValue("Bearer", token);
 
                             // Send the request and get the response.
-                            var client = new HttpClient();
-                            var response = await client.SendRequestAsync(request);
+                            var httpClient = new HttpClient();
+                            using (httpClient)
+                            {
+                                // Send the request and get the response message.
+                                var responseMessage = await httpClient.SendRequestAsync(request);
 
-                            // Convert the response to the appropriate type expected by CoreWebView2 and return.
-                            tcs.SetResult(await GetWebResourceResponseAsync(sender, response));
+                                // Convert the response message to the appropriate response type expected by CoreWebView2.
+                                var response = await GetWebResourceResponseAsync(sender, responseMessage);
+
+                                tcs.SetResult(response);
+                            }
                         }
                         catch (Exception e)
                         {
@@ -92,7 +98,15 @@ namespace WebView2NativeAuthWinUI2
 
                     if (taskQueued)
                     {
-                        args.Response = await tcs.Task;
+                        try
+                        {
+                            args.Response = await tcs.Task;
+                        }
+                        catch (Exception e)
+                        {
+                            Debug.WriteLine(e.Message);
+                            Debugger.Break();
+                        }
                     }
                     else
                     {
@@ -132,6 +146,7 @@ namespace WebView2NativeAuthWinUI2
             }
             catch (Exception e)
             {
+                Debug.WriteLine(e.Message);
                 Debugger.Break();
                 throw e;
             }
@@ -169,6 +184,7 @@ namespace WebView2NativeAuthWinUI2
             }
             catch (Exception e)
             {
+                Debug.WriteLine(e.Message);
                 Debugger.Break();
                 throw e;
             }
